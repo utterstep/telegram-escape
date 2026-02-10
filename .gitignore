@@ -4,3 +4,11 @@
 *.swo
 *~
 .DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+.venv/

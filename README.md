@@ -1,10 +1,12 @@
 # telegram-escape
 
-A Rust library for escaping text according to Telegram's MarkdownV2 formatting rules.
+A Rust library for escaping text according to Telegram's MarkdownV2 formatting rules, with Python bindings.
 
 ## Overview
 
 This library provides the `tg_escape` function that properly escapes special characters in text for use with Telegram Bot API's MarkdownV2 parse mode. It intelligently handles different escaping rules for regular text versus code blocks/inline code.
+
+Available as both a Rust crate and a Python package (via [PyO3](https://pyo3.rs/)).
 
 ## Features
 
@@ -15,23 +17,58 @@ This library provides the `tg_escape` function that properly escapes special cha
 - Preserves markdown structure while ensuring proper escaping
 - Uses `pulldown-cmark` for robust markdown parsing
 
-## Usage
+## Python Usage
+
+Requires Python 3.13+.
+
+### Installation
+
+```bash
+# With uv
+uv add telegram-escape
+
+# With pip
+pip install telegram-escape
+```
+
+To install from source (requires Rust toolchain):
+
+```bash
+# With uv
+uv pip install .
+
+# With pip
+pip install .
+```
+
+### Example
+
+```python
+from telegram_escape import tg_escape
+
+# Basic escaping
+escaped = tg_escape("Check /get_stat command :)")
+# Result: "Check /get\\_stat command :\\)"
+
+# Code blocks have different escaping rules
+escaped = tg_escape("Before `a_*~>#+-=|{}.!\\` after")
+# Inside backticks, only ` and \ are escaped
+```
+
+### Type Checking
+
+The package ships with PEP 561 type stubs, so `tg_escape` is fully typed out of the box.
+
+## Rust Usage
 
 ```rust
 use telegram_escape::tg_escape;
 
-// Basic escaping
 let text = "Soon you'll get a stats for today, and the overall status can be viewed by the /get_stat command :)";
 let escaped = tg_escape(text);
-// Result: "Soon you'll get a stats for today, and the overall status can be viewed by the /get\_stat command :\)"
-
-// Code blocks have different escaping rules
-let text_with_code = "Before `a_*~>#+-=|{}.!\` after";
-let escaped = tg_escape(text_with_code);
-// Inside backticks, only ` and \ are escaped
 ```
 
-## Installation
+### Installation
 
 Add this to your `Cargo.toml`:
 
@@ -42,20 +79,28 @@ telegram-escape = "0.1.0"
 
 ## Testing
 
-Run tests with:
 ```bash
+# Rust tests
 cargo test
+
+# Python (after installing in a venv)
+python -c "from telegram_escape import tg_escape; print(tg_escape('hello_world'))"
 ```
 
-**Note:** Some tests are currently marked as `#[ignore]` due to failing edge cases:
+**Note:** Some Rust tests are currently marked as `#[ignore]` due to failing edge cases:
 - `test_escaped_characters` - handling of already-escaped characters
 - `test_math_expressions` - mathematical operators escaping
 
 ## Dependencies
 
+### Rust
 - `pulldown-cmark` - Markdown parsing
 - `pulldown-cmark-to-cmark` - Markdown serialization (using custom fork)
 - `regex` - Pattern matching for escape characters
+
+### Python build
+- `maturin` - Build backend (PEP 517 compliant, works with pip/uv/any standard tool)
+- `pyo3` - Rust ↔ Python bindings
 
 ## License
 
