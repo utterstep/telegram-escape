@@ -11,12 +11,16 @@ license = { text = "MIT" }
 authors = [
     { name = "Vlad Stepanov", email = "utterstep@hey.com" },
 ]
+readme = "README.md"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: MIT License",
 ]
+
+[project.urls]
+Repository = "https://github.com/utterstep/telegram-escape"
 
 [tool.maturin]
 features = ["python"]
