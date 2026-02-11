@@ -1,0 +1,24 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "telegram-escape"
+version = "0.1.0"
+description = "Escape text for Telegram's MarkdownV2 formatting"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "Vlad Stepanov", email = "utterstep@hey.com" },
+]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+]
+
+[tool.maturin]
+features = ["python"]
+module-name = "telegram_escape._core"
+python-source = "python"

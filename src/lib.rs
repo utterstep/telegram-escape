@@ -74,6 +74,28 @@ pub fn tg_escape(text: &str) -> String {
     res
 }
 
+#[cfg(feature = "python")]
+mod python {
+    use pyo3::prelude::*;
+
+    /// Escape text for Telegram's MarkdownV2 formatting.
+    ///
+    /// Applies context-aware escaping:
+    /// - In regular text: escapes ``_*[]()~`>#+-=|{}.!\\`` characters
+    /// - In code blocks and inline code: only escapes `` ` `` and ``\\`` characters
+    #[pyfunction]
+    fn tg_escape(text: &str) -> String {
+        super::tg_escape(text)
+    }
+
+    #[pymodule]
+    #[pyo3(name = "_core")]
+    fn telegram_escape_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+        m.add_function(wrap_pyfunction!(tg_escape, m)?)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

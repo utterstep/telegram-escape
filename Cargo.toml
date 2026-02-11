@@ -6,10 +6,17 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 pulldown-cmark = "0.13"
 pulldown-cmark-to-cmark = "21"
 regex = "1.7"
+pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
+
+[features]
+python = ["dep:pyo3"]
 
 [dev-dependencies]
 pretty_assertions = "1.3"
