@@ -1,6 +1,6 @@
 [package]
 name = "telegram-escape"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Vlad Stepanov <utterstep@hey.com>"]
 edition = "2021"
 
