@@ -1,6 +1,6 @@
 [package]
 name = "telegram-escape"
-version = "0.2.3"
+version = "0.2.4"
 description = "Escape text for Telegram's MarkdownV2 format"
 license-file = "LICENSE"
 homepage = "https://github.com/utterstep/telegram-escape"
@@ -12,11 +12,8 @@ edition = "2024"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[dependencies]
-pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
-
 [features]
-python = ["dep:pyo3"]
+python = []
 
 [dev-dependencies]
 pretty_assertions = "1.3"
