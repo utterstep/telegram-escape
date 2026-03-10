@@ -62,20 +62,22 @@ fn find_closing(bytes: &[u8], start: usize, delim: &[u8]) -> Option<usize> {
         }
 
         // Skip code blocks
-        if bytes[i] == b'`' && i + 2 < len && bytes[i + 1] == b'`' && bytes[i + 2] == b'`' {
-            // Find closing ```
-            if let Some(close) = find_code_block_end(bytes, i + 3) {
-                i = close;
-                continue;
-            }
+        if bytes[i] == b'`'
+            && i + 2 < len
+            && bytes[i + 1] == b'`'
+            && bytes[i + 2] == b'`'
+            && let Some(close) = find_code_block_end(bytes, i + 3)
+        {
+            i = close;
+            continue;
         }
 
         // Skip inline code
-        if bytes[i] == b'`' {
-            if let Some(close) = find_inline_code_end(bytes, i + 1) {
-                i = close + 1; // past the closing `
-                continue;
-            }
+        if bytes[i] == b'`'
+            && let Some(close) = find_inline_code_end(bytes, i + 1)
+        {
+            i = close + 1; // past the closing `
+            continue;
         }
 
         // Check for closing delimiter
@@ -102,13 +104,16 @@ fn find_code_block_end(bytes: &[u8], start: usize) -> Option<usize> {
 
     // Now scan for closing ``` at the start of a line
     while i < len {
-        if bytes[i] == b'\n' && i + 3 < len {
-            if bytes[i + 1] == b'`' && bytes[i + 2] == b'`' && bytes[i + 3] == b'`' {
-                // Check that the rest of the line is empty (or end of string)
-                let end = i + 4;
-                if end >= len || bytes[end] == b'\n' {
-                    return Some(end);
-                }
+        if bytes[i] == b'\n'
+            && i + 3 < len
+            && bytes[i + 1] == b'`'
+            && bytes[i + 2] == b'`'
+            && bytes[i + 3] == b'`'
+        {
+            // Check that the rest of the line is empty (or end of string)
+            let end = i + 4;
+            if end >= len || bytes[end] == b'\n' {
+                return Some(end);
             }
         }
         i += 1;
@@ -163,131 +168,136 @@ pub fn tg_escape(text: &str) -> String {
         }
 
         // 2. Code block: ```
-        if b == b'`' && i + 2 < len && bytes[i + 1] == b'`' && bytes[i + 2] == b'`' {
-            if let Some(end) = find_code_block_end(bytes, i + 3) {
-                // Emit opening ```
-                out.push_str("```");
-                // Emit content with code escaping
-                // Content runs from after opening ``` to just before closing ```.
-                let content_end = end - 3;
-                let content_bytes = &bytes[i + 3..content_end];
-                for &cb in content_bytes {
-                    push_code_escaped(&mut out, cb as char);
-                }
-                out.push_str("```");
-                i = end;
-                continue;
+        if b == b'`'
+            && i + 2 < len
+            && bytes[i + 1] == b'`'
+            && bytes[i + 2] == b'`'
+            && let Some(end) = find_code_block_end(bytes, i + 3)
+        {
+            out.push_str("```");
+            // Content runs from after opening ``` to just before closing ```.
+            let content_end = end - 3;
+            let content = &text[i + 3..content_end];
+            for ch in content.chars() {
+                push_code_escaped(&mut out, ch);
             }
+            out.push_str("```");
+            i = end;
+            continue;
         }
 
         // 3. Inline code: `
-        if b == b'`' {
-            if let Some(close) = find_inline_code_end(bytes, i + 1) {
-                out.push('`');
-                for &cb in &bytes[i + 1..close] {
-                    push_code_escaped(&mut out, cb as char);
-                }
-                out.push('`');
-                i = close + 1;
-                continue;
+        if b == b'`'
+            && let Some(close) = find_inline_code_end(bytes, i + 1)
+        {
+            out.push('`');
+            let content = &text[i + 1..close];
+            for ch in content.chars() {
+                push_code_escaped(&mut out, ch);
             }
+            out.push('`');
+            i = close + 1;
+            continue;
         }
 
         // 4. Link: [text](url)
-        if b == b'[' {
-            if let Some(bracket_close) = find_closing(bytes, i + 1, b"]") {
-                if bracket_close + 1 < len && bytes[bracket_close + 1] == b'(' {
-                    if let Some(paren_close) = find_raw_closing_paren(bytes, bracket_close + 2) {
-                        out.push('[');
-                        // Escape the link text
-                        let saved_i = i;
-                        let link_text = &text[i + 1..bracket_close];
-                        out.push_str(&tg_escape(link_text));
-                        out.push_str("](");
-                        // URL is emitted verbatim (no escaping)
-                        let url = &text[bracket_close + 2..paren_close];
-                        out.push_str(url);
-                        out.push(')');
-                        i = paren_close + 1;
-                        let _ = saved_i;
-                        continue;
-                    }
-                }
-            }
+        if b == b'['
+            && let Some(bracket_close) = find_closing(bytes, i + 1, b"]")
+            && bracket_close + 1 < len
+            && bytes[bracket_close + 1] == b'('
+            && let Some(paren_close) = find_raw_closing_paren(bytes, bracket_close + 2)
+        {
+            out.push('[');
+            let link_text = &text[i + 1..bracket_close];
+            out.push_str(&tg_escape(link_text));
+            out.push_str("](");
+            let url = &text[bracket_close + 2..paren_close];
+            out.push_str(url);
+            out.push(')');
+            i = paren_close + 1;
+            continue;
         }
 
         // 5. Spoiler: ||
-        if b == b'|' && i + 1 < len && bytes[i + 1] == b'|' {
-            if let Some(close) = find_closing(bytes, i + 2, b"||") {
-                out.push_str("||");
-                let inner = &text[i + 2..close];
-                out.push_str(&tg_escape(inner));
-                out.push_str("||");
-                i = close + 2;
-                continue;
-            }
+        if b == b'|'
+            && i + 1 < len
+            && bytes[i + 1] == b'|'
+            && let Some(close) = find_closing(bytes, i + 2, b"||")
+        {
+            out.push_str("||");
+            let inner = &text[i + 2..close];
+            out.push_str(&tg_escape(inner));
+            out.push_str("||");
+            i = close + 2;
+            continue;
         }
 
         // 6. Underline: __ (must check before single _)
-        if b == b'_' && i + 1 < len && bytes[i + 1] == b'_' {
-            // Make sure this isn't the start of a triple or more
-            if !(i + 2 < len && bytes[i + 2] == b'_') {
-                if let Some(close) = find_closing(bytes, i + 2, b"__") {
-                    out.push_str("__");
-                    let inner = &text[i + 2..close];
-                    out.push_str(&tg_escape(inner));
-                    out.push_str("__");
-                    i = close + 2;
-                    continue;
-                }
-            }
+        if b == b'_'
+            && i + 1 < len
+            && bytes[i + 1] == b'_'
+            && !(i + 2 < len && bytes[i + 2] == b'_')
+            && let Some(close) = find_closing(bytes, i + 2, b"__")
+        {
+            out.push_str("__");
+            let inner = &text[i + 2..close];
+            out.push_str(&tg_escape(inner));
+            out.push_str("__");
+            i = close + 2;
+            continue;
         }
 
         // 7. Bold: *
-        if b == b'*' {
-            if let Some(close) = find_closing(bytes, i + 1, b"*") {
-                out.push('*');
-                let inner = &text[i + 1..close];
-                out.push_str(&tg_escape(inner));
-                out.push('*');
-                i = close + 1;
-                continue;
-            }
+        if b == b'*'
+            && let Some(close) = find_closing(bytes, i + 1, b"*")
+        {
+            out.push('*');
+            let inner = &text[i + 1..close];
+            out.push_str(&tg_escape(inner));
+            out.push('*');
+            i = close + 1;
+            continue;
         }
 
         // 8. Italic: _ (single, not part of __)
-        if b == b'_' {
-            if let Some(close) = find_closing(bytes, i + 1, b"_") {
-                // Make sure the closing _ is not part of __
-                let close_is_double =
-                    (close + 1 < len && bytes[close + 1] == b'_')
-                    || (close > 0 && bytes[close - 1] == b'_' && close - 1 > i);
-                if !close_is_double {
-                    out.push('_');
-                    let inner = &text[i + 1..close];
-                    out.push_str(&tg_escape(inner));
-                    out.push('_');
-                    i = close + 1;
-                    continue;
-                }
+        if b == b'_'
+            && let Some(close) = find_closing(bytes, i + 1, b"_")
+        {
+            // Make sure the closing _ is not part of __
+            let close_is_double = (close + 1 < len && bytes[close + 1] == b'_')
+                || (close > 0 && bytes[close - 1] == b'_' && close - 1 > i);
+            if !close_is_double {
+                out.push('_');
+                let inner = &text[i + 1..close];
+                out.push_str(&tg_escape(inner));
+                out.push('_');
+                i = close + 1;
+                continue;
             }
         }
 
         // 9. Strikethrough: ~
-        if b == b'~' {
-            if let Some(close) = find_closing(bytes, i + 1, b"~") {
-                out.push('~');
-                let inner = &text[i + 1..close];
-                out.push_str(&tg_escape(inner));
-                out.push('~');
-                i = close + 1;
-                continue;
-            }
+        if b == b'~'
+            && let Some(close) = find_closing(bytes, i + 1, b"~")
+        {
+            out.push('~');
+            let inner = &text[i + 1..close];
+            out.push_str(&tg_escape(inner));
+            out.push('~');
+            i = close + 1;
+            continue;
         }
 
-        // 10. Plain text: escape if special
-        push_escaped(&mut out, b as char);
-        i += 1;
+        // 10. Plain text: escape if special, or copy multi-byte UTF-8 verbatim
+        if b < 0x80 {
+            push_escaped(&mut out, b as char);
+            i += 1;
+        } else {
+            // Non-ASCII UTF-8 chars never need escaping for Telegram MarkdownV2
+            let ch = text[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
     }
 
     out
@@ -340,7 +350,9 @@ mod tests {
     #[test]
     fn test_md_escape() {
         assert_eq!(
-            tg_escape("Soon you'll get a stats for today, and the overall status can be viewed by the /get_stat command :)"),
+            tg_escape(
+                "Soon you'll get a stats for today, and the overall status can be viewed by the /get_stat command :)"
+            ),
             r#"Soon you'll get a stats for today, and the overall status can be viewed by the /get\_stat command :\)"#
         )
     }
@@ -408,7 +420,7 @@ mod tests {
         assert_eq!(tg_escape(input), expected);
     }
 
-    // --- New tests for Telegram-native formatting preservation ---
+    // --- Formatting preservation ---
 
     #[test]
     fn test_bold_preserved() {
@@ -453,10 +465,7 @@ mod tests {
 
     #[test]
     fn test_nested_formatting() {
-        assert_eq!(
-            tg_escape("*bold _italic_ bold*"),
-            "*bold _italic_ bold*"
-        );
+        assert_eq!(tg_escape("*bold _italic_ bold*"), "*bold _italic_ bold*");
     }
 
     #[test]
@@ -477,5 +486,121 @@ mod tests {
         let input = "```rust\nfn main() {}\n```";
         let expected = "```rust\nfn main() {}\n```";
         assert_eq!(tg_escape(input), expected);
+    }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn test_empty_string() {
+        assert_eq!(tg_escape(""), "");
+    }
+
+    #[test]
+    fn test_no_special_chars() {
+        assert_eq!(tg_escape("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_unmatched_bold() {
+        assert_eq!(tg_escape("price is 5*3"), r"price is 5\*3");
+    }
+
+    #[test]
+    fn test_unmatched_italic() {
+        assert_eq!(tg_escape("file_name"), r"file\_name");
+    }
+
+    #[test]
+    fn test_unmatched_backtick() {
+        assert_eq!(tg_escape("it's a `test"), r"it's a \`test");
+    }
+
+    #[test]
+    fn test_adjacent_formatting() {
+        assert_eq!(tg_escape("*bold*_italic_"), "*bold*_italic_");
+    }
+
+    #[test]
+    fn test_formatting_with_special_inside() {
+        assert_eq!(tg_escape("*2+2=4*"), r"*2\+2\=4*");
+    }
+
+    #[test]
+    fn test_multiple_newlines() {
+        assert_eq!(tg_escape("a\n\nb"), "a\n\nb");
+    }
+
+    #[test]
+    fn test_non_special_chars_pass_through() {
+        // < @ / : ; are NOT Telegram MarkdownV2 special chars
+        assert_eq!(tg_escape("a < b @ c / d : e ; f"), "a < b @ c / d : e ; f");
+    }
+
+    #[test]
+    fn test_code_block_with_backticks_inside() {
+        let input = "```\nsome `code` here\n```";
+        let expected = "```\nsome \\`code\\` here\n```";
+        assert_eq!(tg_escape(input), expected);
+    }
+
+    #[test]
+    fn test_link_with_formatted_text() {
+        assert_eq!(
+            tg_escape("[*bold link*](https://example.com)"),
+            "[*bold link*](https://example.com)"
+        );
+    }
+
+    #[test]
+    fn test_unmatched_bracket_not_link() {
+        assert_eq!(tg_escape("[not a link"), r"\[not a link");
+    }
+
+    #[test]
+    fn test_bracket_without_paren() {
+        assert_eq!(tg_escape("[text] no url"), r"\[text\] no url");
+    }
+
+    #[test]
+    fn test_spoiler_with_special_inside() {
+        assert_eq!(tg_escape("||secret!||"), r"||secret\!||");
+    }
+
+    #[test]
+    fn test_underline_vs_italic() {
+        // __ is underline, not double italic
+        assert_eq!(tg_escape("__underline__"), "__underline__");
+        // single _ around __ content
+        assert_eq!(tg_escape("_italic_"), "_italic_");
+    }
+
+    #[test]
+    fn test_escaped_delimiter_not_matched() {
+        // \* should not be treated as a bold delimiter
+        assert_eq!(tg_escape(r"\*not bold\*"), r"\*not bold\*");
+    }
+
+    #[test]
+    fn test_backslash_before_non_special() {
+        // \ before a non-special char: the \ itself is special and gets escaped
+        assert_eq!(tg_escape(r"\n"), r"\\n");
+    }
+
+    #[test]
+    fn test_consecutive_specials() {
+        assert_eq!(tg_escape("()[]{}"), r"\(\)\[\]\{\}");
+    }
+
+    #[test]
+    fn test_cyrillic_text() {
+        assert_eq!(tg_escape("НОВЫЙ"), "НОВЫЙ");
+        assert_eq!(tg_escape("Привет мир"), "Привет мир");
+        assert_eq!(tg_escape("Привет *мир*!"), r"Привет *мир*\!");
+    }
+
+    #[test]
+    fn test_multibyte_in_code() {
+        assert_eq!(tg_escape("`код`"), "`код`");
+        assert_eq!(tg_escape("```\nкод\n```"), "```\nкод\n```");
     }
 }
