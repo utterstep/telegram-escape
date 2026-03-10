@@ -30,22 +30,42 @@ fn push_code_escaped(out: &mut String, c: char) {
     out.push(c);
 }
 
-/// Find the position of a closing delimiter in `text` starting from byte offset `start`.
-/// Returns the byte offset of the first character of the closing delimiter, or `None`.
+// ---------------------------------------------------------------------------
+// Finding helpers (work with slices, return relative offsets)
+// ---------------------------------------------------------------------------
+
+/// Find the end of a code block. `after_opening` starts right after the opening `` ``` ``.
+/// Returns the byte length consumed (including the closing `` ``` ``), or `None`.
+fn find_code_block_end(after_opening: &str) -> Option<usize> {
+    let newline_pos = after_opening.find('\n')?;
+    let mut search_from = newline_pos;
+    while search_from < after_opening.len() {
+        let pos = after_opening[search_from..].find("\n```")?;
+        let end = search_from + pos + 4; // \n + ```
+        if end >= after_opening.len() || after_opening[end..].starts_with('\n') {
+            return Some(end);
+        }
+        search_from += pos + 1;
+    }
+    None
+}
+
+/// Find the position of a closing delimiter in `content`.
+/// Returns the byte offset relative to `content`, or `None`.
 ///
 /// Skips over:
 /// - already-escaped characters (`\X`)
 /// - inline code spans (`` `...` ``)
-/// - code blocks (` ```...``` `)
-fn find_closing(text: &str, start: usize, delim: &str) -> Option<usize> {
-    let mut i = start;
+/// - code blocks (`` ```...``` ``)
+fn find_closing(content: &str, delim: &str) -> Option<usize> {
+    let mut i = 0;
 
-    while i < text.len() {
-        let ch = text[i..].chars().next().unwrap();
+    while i < content.len() {
+        let ch = content[i..].chars().next().unwrap();
 
         // Skip already-escaped characters
         if ch == '\\'
-            && let Some(next_ch) = text.get(i + 1..).and_then(|s| s.chars().next())
+            && let Some(next_ch) = content.get(i + 1..).and_then(|s| s.chars().next())
             && is_tg_special(next_ch)
         {
             i += 1 + next_ch.len_utf8();
@@ -53,23 +73,23 @@ fn find_closing(text: &str, start: usize, delim: &str) -> Option<usize> {
         }
 
         // Skip code blocks
-        if text[i..].starts_with("```")
-            && let Some(close) = find_code_block_end(text, i + 3)
+        if content[i..].starts_with("```")
+            && let Some(end) = find_code_block_end(&content[i + 3..])
         {
-            i = close;
+            i += 3 + end;
             continue;
         }
 
         // Skip inline code
         if ch == '`'
-            && let Some(close) = find_inline_code_end(text, i + 1)
+            && let Some(pos) = content[i + 1..].find('`')
         {
-            i = close + 1; // past the closing `
+            i += pos + 2; // past both backticks
             continue;
         }
 
         // Check for closing delimiter
-        if text[i..].starts_with(delim) {
+        if content[i..].starts_with(delim) {
             return Some(i);
         }
 
@@ -77,41 +97,6 @@ fn find_closing(text: &str, start: usize, delim: &str) -> Option<usize> {
     }
 
     None
-}
-
-/// Find the end of a code block starting after the opening ` ``` `.
-/// Returns the byte position right after the closing ` ``` `.
-fn find_code_block_end(text: &str, start: usize) -> Option<usize> {
-    // Skip optional language tag (rest of the opening line)
-    let after_lang = match text[start..].find('\n') {
-        Some(p) => start + p,
-        None => return None,
-    };
-
-    // Scan for \n``` followed by \n or end of string
-    let mut search_from = after_lang;
-    while search_from < text.len() {
-        let pos = text[search_from..].find("\n```")?;
-        let end = search_from + pos + 4; // \n + ```
-        if end >= text.len() || text[end..].starts_with('\n') {
-            return Some(end);
-        }
-        search_from += pos + 1;
-    }
-
-    None
-}
-
-/// Find the closing `` ` `` for inline code starting at byte offset `start`.
-/// Returns the byte position of the closing backtick.
-fn find_inline_code_end(text: &str, start: usize) -> Option<usize> {
-    text[start..].find('`').map(|pos| start + pos)
-}
-
-/// Find closing `)` for a link URL. Does not skip over formatting —
-/// URLs are opaque, just find the first unescaped `)`.
-fn find_raw_closing_paren(text: &str, start: usize) -> Option<usize> {
-    text[start..].find(')').map(|pos| start + pos)
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +121,29 @@ enum DelimiterGuard {
 struct InlineDelimiter {
     delim: &'static str,
     guard: DelimiterGuard,
+}
+
+impl InlineDelimiter {
+    /// Returns `true` if the opening context rejects this match.
+    fn open_rejected(&self, after_open: &str) -> bool {
+        match self.guard {
+            DelimiterGuard::RejectTripled => after_open.starts_with(&self.delim[..1]),
+            _ => false,
+        }
+    }
+
+    /// Returns `true` if the closing position should be rejected.
+    fn close_rejected(&self, after_open: &str, close_pos: usize) -> bool {
+        match self.guard {
+            DelimiterGuard::RejectDoubledClose => {
+                let dc = self.delim.as_bytes()[0];
+                let len = self.delim.len();
+                after_open.as_bytes().get(close_pos + len) == Some(&dc)
+                    || (close_pos > 0 && after_open.as_bytes().get(close_pos - 1) == Some(&dc))
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Inline formatting delimiters, checked **in order**.
@@ -165,6 +173,177 @@ const INLINE_DELIMITERS: &[InlineDelimiter] = &[
     }, // strikethrough
 ];
 
+// ---------------------------------------------------------------------------
+// Fragment: parsed piece of the input
+// ---------------------------------------------------------------------------
+
+/// A parsed fragment of the input text.
+enum Fragment<'a> {
+    /// Already-escaped character (e.g., `\*`), pass through verbatim.
+    Escaped(char),
+    /// Code block content (between `` ``` `` markers).
+    CodeBlock(&'a str),
+    /// Inline code content (between `` ` `` markers).
+    InlineCode(&'a str),
+    /// Link with text and URL.
+    Link { text: &'a str, url: &'a str },
+    /// Formatted text with delimiter (e.g., `*bold*`).
+    Formatted {
+        delim: &'static str,
+        content: &'a str,
+    },
+    /// Plain character (escape if special).
+    Plain(char),
+}
+
+impl Fragment<'_> {
+    fn render(&self, out: &mut String) {
+        match self {
+            Self::Escaped(c) => {
+                out.push('\\');
+                out.push(*c);
+            }
+            Self::CodeBlock(content) => {
+                out.push_str("```");
+                for c in content.chars() {
+                    push_code_escaped(out, c);
+                }
+                out.push_str("```");
+            }
+            Self::InlineCode(content) => {
+                out.push('`');
+                for c in content.chars() {
+                    push_code_escaped(out, c);
+                }
+                out.push('`');
+            }
+            Self::Link { text, url } => {
+                out.push('[');
+                out.push_str(&tg_escape(text));
+                out.push_str("](");
+                out.push_str(url);
+                out.push(')');
+            }
+            Self::Formatted { delim, content } => {
+                out.push_str(delim);
+                out.push_str(&tg_escape(content));
+                out.push_str(delim);
+            }
+            Self::Plain(c) => {
+                if is_tg_special(*c) {
+                    out.push('\\');
+                }
+                out.push(*c);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fragment parsers — each returns `Some` and advances `input` on success,
+// or returns `None` leaving `input` unchanged.
+// ---------------------------------------------------------------------------
+
+fn try_escaped_char<'a>(input: &mut &'a str) -> Option<Fragment<'a>> {
+    let rest = *input;
+    let mut chars = rest.chars();
+    if chars.next()? != '\\' {
+        return None;
+    }
+    let next = chars.next().filter(|c| is_tg_special(*c))?;
+    *input = &rest[1 + next.len_utf8()..];
+    Some(Fragment::Escaped(next))
+}
+
+fn try_code_block<'a>(input: &mut &'a str) -> Option<Fragment<'a>> {
+    let rest = *input;
+    let after_opening = rest.strip_prefix("```")?;
+    let end = find_code_block_end(after_opening)?;
+    let content = &after_opening[..end - 3]; // everything before closing ```
+    *input = &after_opening[end..];
+    Some(Fragment::CodeBlock(content))
+}
+
+fn try_inline_code<'a>(input: &mut &'a str) -> Option<Fragment<'a>> {
+    let rest = *input;
+    let after_backtick = rest.strip_prefix('`')?;
+    let close = after_backtick.find('`')?;
+    let content = &after_backtick[..close];
+    *input = &after_backtick[close + 1..];
+    Some(Fragment::InlineCode(content))
+}
+
+fn try_link<'a>(input: &mut &'a str) -> Option<Fragment<'a>> {
+    let rest = *input;
+    let after_bracket = rest.strip_prefix('[')?;
+
+    let bracket_close = find_closing(after_bracket, "]")?;
+    let after_text = after_bracket[bracket_close + 1..].strip_prefix('(')?;
+    let paren_close = after_text.find(')')?;
+
+    let text = &after_bracket[..bracket_close];
+    let url = &after_text[..paren_close];
+    *input = &after_text[paren_close + 1..];
+    Some(Fragment::Link { text, url })
+}
+
+fn try_formatting<'a>(input: &mut &'a str) -> Option<Fragment<'a>> {
+    let rest = *input;
+
+    for d in INLINE_DELIMITERS {
+        if !rest.starts_with(d.delim) {
+            continue;
+        }
+
+        let len = d.delim.len();
+        let after_open = &rest[len..];
+
+        if d.open_rejected(after_open) {
+            continue;
+        }
+
+        let Some(close) = find_closing(after_open, d.delim) else {
+            continue;
+        };
+
+        if d.close_rejected(after_open, close) {
+            continue;
+        }
+
+        let content = &after_open[..close];
+        *input = &after_open[close + len..];
+        return Some(Fragment::Formatted {
+            delim: d.delim,
+            content,
+        });
+    }
+
+    None
+}
+
+/// Parse the next fragment from `input`, advancing past it.
+fn next_fragment<'a>(input: &mut &'a str) -> Fragment<'a> {
+    if let Some(f) = try_escaped_char(input) {
+        return f;
+    }
+    if let Some(f) = try_code_block(input) {
+        return f;
+    }
+    if let Some(f) = try_inline_code(input) {
+        return f;
+    }
+    if let Some(f) = try_link(input) {
+        return f;
+    }
+    if let Some(f) = try_formatting(input) {
+        return f;
+    }
+
+    let ch = input.chars().next().unwrap();
+    *input = &input[ch.len_utf8()..];
+    Fragment::Plain(ch)
+}
+
 /// Escapes given text, abiding Telegram flavoured Markdown
 /// [rules](https://core.telegram.org/bots/api#formatting-options).
 ///
@@ -178,109 +357,10 @@ const INLINE_DELIMITERS: &[InlineDelimiter] = &[
 /// Inside code spans/blocks, only `` ` `` and `\` are escaped.
 pub fn tg_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let mut i = 0;
+    let mut input = text;
 
-    'outer: while i < text.len() {
-        let ch = text[i..].chars().next().unwrap();
-
-        // 1. Already-escaped characters: \X → pass through verbatim
-        if ch == '\\'
-            && let Some(next_ch) = text.get(i + 1..).and_then(|s| s.chars().next())
-            && is_tg_special(next_ch)
-        {
-            out.push('\\');
-            out.push(next_ch);
-            i += 1 + next_ch.len_utf8();
-            continue;
-        }
-
-        // 2. Code block: ```
-        if text[i..].starts_with("```")
-            && let Some(end) = find_code_block_end(text, i + 3)
-        {
-            out.push_str("```");
-            let content = &text[i + 3..end - 3];
-            for c in content.chars() {
-                push_code_escaped(&mut out, c);
-            }
-            out.push_str("```");
-            i = end;
-            continue;
-        }
-
-        // 3. Inline code: `
-        if ch == '`'
-            && let Some(close) = find_inline_code_end(text, i + 1)
-        {
-            out.push('`');
-            for c in text[i + 1..close].chars() {
-                push_code_escaped(&mut out, c);
-            }
-            out.push('`');
-            i = close + 1;
-            continue;
-        }
-
-        // 4. Link: [text](url)
-        if ch == '['
-            && let Some(bracket_close) = find_closing(text, i + 1, "]")
-            && text.get(bracket_close + 1..bracket_close + 2) == Some("(")
-            && let Some(paren_close) = find_raw_closing_paren(text, bracket_close + 2)
-        {
-            out.push('[');
-            out.push_str(&tg_escape(&text[i + 1..bracket_close]));
-            out.push_str("](");
-            out.push_str(&text[bracket_close + 2..paren_close]);
-            out.push(')');
-            i = paren_close + 1;
-            continue;
-        }
-
-        // 5–9. Inline formatting delimiters (table-driven)
-        for d in INLINE_DELIMITERS {
-            let rest = &text[i..];
-            if !rest.starts_with(d.delim) {
-                continue;
-            }
-
-            let len = d.delim.len();
-
-            // Open guard: e.g. reject "___" when matching "__"
-            if d.guard == DelimiterGuard::RejectTripled
-                && rest
-                    .get(len..)
-                    .is_some_and(|s| s.starts_with(&d.delim[..1]))
-            {
-                continue;
-            }
-
-            let Some(close) = find_closing(text, i + len, d.delim) else {
-                continue;
-            };
-
-            // Close guard: e.g. reject closing "_" that is part of "__"
-            if d.guard == DelimiterGuard::RejectDoubledClose {
-                let dc = d.delim.as_bytes()[0];
-                let close_is_double = text.as_bytes().get(close + len) == Some(&dc)
-                    || (close > i + len && text.as_bytes().get(close - 1) == Some(&dc));
-                if close_is_double {
-                    continue;
-                }
-            }
-
-            out.push_str(d.delim);
-            out.push_str(&tg_escape(&text[i + len..close]));
-            out.push_str(d.delim);
-            i = close + len;
-            continue 'outer;
-        }
-
-        // 10. Plain text: escape special chars, pass through everything else
-        if is_tg_special(ch) {
-            out.push('\\');
-        }
-        out.push(ch);
-        i += ch.len_utf8();
+    while !input.is_empty() {
+        next_fragment(&mut input).render(&mut out);
     }
 
     out
@@ -569,5 +649,22 @@ mod tests {
     fn test_multibyte_in_code() {
         assert_eq!(tg_escape("`код`"), "`код`");
         assert_eq!(tg_escape("```\nкод\n```"), "```\nкод\n```");
+    }
+
+    #[test]
+    fn test_delimiter_ordering_invariant() {
+        // A shorter delimiter must not precede a longer one it is a prefix of,
+        // otherwise the shorter one would greedily consume the longer one's opening.
+        for (i, a) in INLINE_DELIMITERS.iter().enumerate() {
+            for b in &INLINE_DELIMITERS[i + 1..] {
+                assert!(
+                    !b.delim.starts_with(a.delim),
+                    "'{0}' is a prefix of '{1}' but comes before it — \
+                     multi-char delimiters must precede their subsets",
+                    a.delim,
+                    b.delim,
+                );
+            }
+        }
     }
 }
