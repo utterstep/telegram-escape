@@ -2,8 +2,7 @@
 ///
 /// Source of truth: <https://core.telegram.org/bots/api#markdownv2-style>
 const TG_SPECIAL_CHARS: &[char] = &[
-    '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!',
-    '\\',
+    '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!', '\\',
 ];
 
 /// O(1) lookup table built at compile time from [`TG_SPECIAL_CHARS`].
