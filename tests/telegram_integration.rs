@@ -148,7 +148,7 @@ async fn test_edge_case_escaping() {
         let result = bot
             .send_message(
                 chat_id,
-                if escaped.is_empty() {
+                if escaped.trim().is_empty() {
                     "〈empty〉"
                 } else {
                     &escaped
