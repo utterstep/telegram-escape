@@ -1,6 +1,6 @@
 [package]
 name = "telegram-escape"
-version = "0.2.2"
+version = "0.2.3"
 description = "Escape text for Telegram's MarkdownV2 format"
 license-file = "LICENSE"
 homepage = "https://github.com/utterstep/telegram-escape"

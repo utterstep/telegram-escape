@@ -1,29 +1,26 @@
-// _*[]()~`>#+-=|{}.!\
+/// Telegram MarkdownV2 special characters that must be escaped in regular text.
+///
+/// Source of truth: <https://core.telegram.org/bots/api#markdownv2-style>
+const TG_SPECIAL_CHARS: &[char] = &[
+    '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!',
+    '\\',
+];
 
-/// Returns true if the character is a Telegram MarkdownV2 special character
-/// that must be escaped with `\` in regular text.
+/// O(1) lookup table built at compile time from [`TG_SPECIAL_CHARS`].
+const TG_SPECIAL: [bool; 128] = {
+    let mut table = [false; 128];
+    let mut i = 0;
+    while i < TG_SPECIAL_CHARS.len() {
+        table[TG_SPECIAL_CHARS[i] as usize] = true;
+        i += 1;
+    }
+    table
+};
+
+/// Returns `true` if `c` is a Telegram MarkdownV2 special character.
 fn is_tg_special(c: char) -> bool {
-    matches!(
-        c,
-        '_' | '*'
-            | '['
-            | ']'
-            | '('
-            | ')'
-            | '~'
-            | '`'
-            | '>'
-            | '#'
-            | '+'
-            | '-'
-            | '='
-            | '|'
-            | '{'
-            | '}'
-            | '.'
-            | '!'
-            | '\\'
-    )
+    let code = c as u32;
+    code < 128 && TG_SPECIAL[code as usize]
 }
 
 /// Push a character to `out`, escaping it for code context (only `` ` `` and `\`).
@@ -118,6 +115,57 @@ fn find_raw_closing_paren(text: &str, start: usize) -> Option<usize> {
     text[start..].find(')').map(|pos| start + pos)
 }
 
+// ---------------------------------------------------------------------------
+// Inline formatting delimiter table
+// ---------------------------------------------------------------------------
+
+/// Edge-case guard for a formatting delimiter.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DelimiterGuard {
+    /// No special handling.
+    None,
+    /// Reject if the opening is immediately followed by an extra copy of the
+    /// delimiter's first character.  Prevents `__` from greedily matching `___`
+    /// (underline eating into italic).
+    RejectTripled,
+    /// Reject if the closing delimiter is adjacent to another copy of the same
+    /// character.  Prevents single `_` (italic) from matching a `_` that is
+    /// part of `__` (underline).
+    RejectDoubledClose,
+}
+
+struct InlineDelimiter {
+    delim: &'static str,
+    guard: DelimiterGuard,
+}
+
+/// Inline formatting delimiters, checked **in order**.
+///
+/// Multi-character delimiters must precede their single-character subsets
+/// (e.g. `||` before `|`, `__` before `_`).
+const INLINE_DELIMITERS: &[InlineDelimiter] = &[
+    InlineDelimiter {
+        delim: "||",
+        guard: DelimiterGuard::None,
+    }, // spoiler
+    InlineDelimiter {
+        delim: "__",
+        guard: DelimiterGuard::RejectTripled,
+    }, // underline
+    InlineDelimiter {
+        delim: "*",
+        guard: DelimiterGuard::None,
+    }, // bold
+    InlineDelimiter {
+        delim: "_",
+        guard: DelimiterGuard::RejectDoubledClose,
+    }, // italic
+    InlineDelimiter {
+        delim: "~",
+        guard: DelimiterGuard::None,
+    }, // strikethrough
+];
+
 /// Escapes given text, abiding Telegram flavoured Markdown
 /// [rules](https://core.telegram.org/bots/api#formatting-options).
 ///
@@ -133,7 +181,7 @@ pub fn tg_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
 
-    while i < text.len() {
+    'outer: while i < text.len() {
         let ch = text[i..].chars().next().unwrap();
 
         // 1. Already-escaped characters: \X → pass through verbatim
@@ -189,65 +237,43 @@ pub fn tg_escape(text: &str) -> String {
             continue;
         }
 
-        // 5. Spoiler: ||
-        if text[i..].starts_with("||")
-            && let Some(close) = find_closing(text, i + 2, "||")
-        {
-            out.push_str("||");
-            out.push_str(&tg_escape(&text[i + 2..close]));
-            out.push_str("||");
-            i = close + 2;
-            continue;
-        }
-
-        // 6. Underline: __ (must check before single _)
-        if text[i..].starts_with("__")
-            && !text[i..].starts_with("___")
-            && let Some(close) = find_closing(text, i + 2, "__")
-        {
-            out.push_str("__");
-            out.push_str(&tg_escape(&text[i + 2..close]));
-            out.push_str("__");
-            i = close + 2;
-            continue;
-        }
-
-        // 7. Bold: *
-        if ch == '*'
-            && let Some(close) = find_closing(text, i + 1, "*")
-        {
-            out.push('*');
-            out.push_str(&tg_escape(&text[i + 1..close]));
-            out.push('*');
-            i = close + 1;
-            continue;
-        }
-
-        // 8. Italic: _ (single, not part of __)
-        if ch == '_'
-            && let Some(close) = find_closing(text, i + 1, "_")
-        {
-            // Make sure the closing _ is not part of __
-            let close_is_double = text.get(close..close + 2) == Some("__")
-                || (close > i + 1 && text.get(close - 1..close) == Some("_"));
-            if !close_is_double {
-                out.push('_');
-                out.push_str(&tg_escape(&text[i + 1..close]));
-                out.push('_');
-                i = close + 1;
+        // 5–9. Inline formatting delimiters (table-driven)
+        for d in INLINE_DELIMITERS {
+            let rest = &text[i..];
+            if !rest.starts_with(d.delim) {
                 continue;
             }
-        }
 
-        // 9. Strikethrough: ~
-        if ch == '~'
-            && let Some(close) = find_closing(text, i + 1, "~")
-        {
-            out.push('~');
-            out.push_str(&tg_escape(&text[i + 1..close]));
-            out.push('~');
-            i = close + 1;
-            continue;
+            let len = d.delim.len();
+
+            // Open guard: e.g. reject "___" when matching "__"
+            if d.guard == DelimiterGuard::RejectTripled
+                && rest
+                    .get(len..)
+                    .is_some_and(|s| s.starts_with(&d.delim[..1]))
+            {
+                continue;
+            }
+
+            let Some(close) = find_closing(text, i + len, d.delim) else {
+                continue;
+            };
+
+            // Close guard: e.g. reject closing "_" that is part of "__"
+            if d.guard == DelimiterGuard::RejectDoubledClose {
+                let dc = d.delim.as_bytes()[0];
+                let close_is_double = text.as_bytes().get(close + len) == Some(&dc)
+                    || (close > i + len && text.as_bytes().get(close - 1) == Some(&dc));
+                if close_is_double {
+                    continue;
+                }
+            }
+
+            out.push_str(d.delim);
+            out.push_str(&tg_escape(&text[i + len..close]));
+            out.push_str(d.delim);
+            i = close + len;
+            continue 'outer;
         }
 
         // 10. Plain text: escape special chars, pass through everything else

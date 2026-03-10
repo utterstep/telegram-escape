@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "telegram-escape"
-version = "0.2.2"
+version = "0.2.3"
 description = "Escape text for Telegram's MarkdownV2 formatting"
 requires-python = ">=3.13"
 license = { text = "MIT" }
