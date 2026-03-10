@@ -39,27 +39,50 @@ pub fn tg_escape(text: &str) -> String {
                 event
             }
             Event::Text(text) | Event::Code(text) => {
-                if text.len() == 1 {
-                    // pulldown-cmark-to-cmark escapes single characters properly on it's own, aside
-                    return event;
-                }
-
-                let re = if inside_code || matches!(&event, Event::Code(_)) {
+                let in_code = inside_code || matches!(&event, Event::Code(_));
+                let re = if in_code {
                     &TG_MD_CODE_ESCAPE_REGEX
                 } else {
                     &TG_MD_ESCAPE_REGEX
                 };
 
-                // manual COW implementation...
-                let replaced = re.replace_all(text, r"\$0");
+                if in_code {
+                    // Inside code blocks/spans, pulldown-cmark-to-cmark does not
+                    // re-escape anything, so we escape all characters ourselves.
+                    let replaced = re.replace_all(text, r"\$0");
+                    return match replaced {
+                        Cow::Borrowed(_) => event,
+                        Cow::Owned(new_text) => match event {
+                            Event::Text(_) => Event::Text(new_text.into()),
+                            Event::Code(_) => Event::Code(new_text.into()),
+                            _ => unreachable!(),
+                        },
+                    };
+                }
 
+                if text.len() <= 1 {
+                    // pulldown-cmark-to-cmark escapes single characters on its own
+                    return event;
+                }
+
+                // pulldown-cmark-to-cmark escapes the first character of each text event
+                // if it's a Telegram special character. To avoid double-escaping, we skip
+                // the first character here and only apply our regex to the remainder.
+                let first_char_len = text.chars().next().unwrap().len_utf8();
+                let rest = &text[first_char_len..];
+
+                let replaced = re.replace_all(rest, r"\$0");
                 match replaced {
                     Cow::Borrowed(_) => event,
-                    Cow::Owned(text) => match event {
-                        Event::Text(_) => Event::Text(text.into()),
-                        Event::Code(_) => Event::Code(text.into()),
-                        _ => unreachable!(),
-                    },
+                    Cow::Owned(escaped_rest) => {
+                        let new_text =
+                            format!("{}{}", &text[..first_char_len], escaped_rest);
+                        match event {
+                            Event::Text(_) => Event::Text(new_text.into()),
+                            Event::Code(_) => Event::Code(new_text.into()),
+                            _ => unreachable!(),
+                        }
+                    }
                 }
             }
             _ => event,
@@ -113,7 +136,7 @@ mod tests {
     fn test_escape_outside_code_all_specials() {
         // All MarkdownV2 special characters should be escaped outside code (avoid link syntax)
         let input = r#"a_*~`>#+-=|{}.!\x"#;
-        let expected = r"a\_\*\~\`\\>\#\+\-\=\|\{\}\.\!\\x";
+        let expected = r"a\_\*\~\`\>\#\+\-\=\|\{\}\.\!\\x";
 
         assert_eq!(tg_escape(input), expected);
     }
@@ -158,19 +181,20 @@ a_*[]()~\`>#+-=|{}.!\\
     }
 
     #[test]
-    #[ignore = "this test is failing"]
     fn test_escaped_characters() {
+        // pulldown-cmark interprets CommonMark backslash escapes before we see them:
+        // \\ → \, \* → *, \_ → _, etc. Each resulting char is then Telegram-escaped.
         let input = r"Escaped characters: \\ \* \_ \[ \] \( \) \~";
-        let expected = r"Escaped characters: \\\\ \\\* \\\_ \\\[ \\\] \\\( \\\) \\\~";
+        let expected = r"Escaped characters: \\ \* \_ \[ \] \( \) \~";
 
         assert_eq!(tg_escape(input), expected);
     }
 
     #[test]
-    #[ignore = "this test is failing"]
     fn test_math_expressions() {
+        // '<' is not a Telegram MarkdownV2 reserved character, so it is not escaped.
         let input = r"Mathematical expressions: 2 + 2 = 4, x > y, a <= b";
-        let expected = r"Mathematical expressions: 2 \+ 2 \= 4, x \> y, a \<\= b";
+        let expected = r"Mathematical expressions: 2 \+ 2 \= 4, x \> y, a <\= b";
 
         assert_eq!(tg_escape(input), expected);
     }

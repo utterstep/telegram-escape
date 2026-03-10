@@ -1,8 +1,11 @@
 [package]
 name = "telegram-escape"
 version = "0.1.1"
+description = "Escape text for Telegram's MarkdownV2 format"
+license-file = "LICENSE"
+homepage = "https://github.com/utterstep/telegram-escape"
 authors = ["Vlad Stepanov <utterstep@hey.com>"]
-edition = "2021"
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
