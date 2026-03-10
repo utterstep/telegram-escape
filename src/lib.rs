@@ -26,14 +26,6 @@ fn is_tg_special(c: char) -> bool {
     )
 }
 
-/// Push a character to `out`, escaping it for regular Telegram MarkdownV2 text.
-fn push_escaped(out: &mut String, c: char) {
-    if is_tg_special(c) {
-        out.push('\\');
-    }
-    out.push(c);
-}
-
 /// Push a character to `out`, escaping it for code context (only `` ` `` and `\`).
 fn push_code_escaped(out: &mut String, c: char) {
     if c == '`' || c == '\\' {
@@ -42,50 +34,50 @@ fn push_code_escaped(out: &mut String, c: char) {
     out.push(c);
 }
 
-/// Find the position of a closing delimiter `delim` in `bytes` starting from `start`.
-/// Returns the byte offset (relative to `bytes`) of the first character of the closing delimiter,
-/// or `None` if not found.
+/// Find the position of a closing delimiter in `text` starting from byte offset `start`.
+/// Returns the byte offset of the first character of the closing delimiter, or `None`.
 ///
 /// Skips over:
 /// - already-escaped characters (`\X`)
 /// - inline code spans (`` `...` ``)
 /// - code blocks (` ```...``` `)
-fn find_closing(bytes: &[u8], start: usize, delim: &[u8]) -> Option<usize> {
-    let len = bytes.len();
+fn find_closing(text: &str, start: usize, delim: &str) -> Option<usize> {
     let mut i = start;
 
-    while i < len {
+    while i < text.len() {
+        let ch = text[i..].chars().next().unwrap();
+
         // Skip already-escaped characters
-        if bytes[i] == b'\\' && i + 1 < len && is_tg_special(bytes[i + 1] as char) {
-            i += 2;
+        if ch == '\\'
+            && let Some(next_ch) = text.get(i + 1..).and_then(|s| s.chars().next())
+            && is_tg_special(next_ch)
+        {
+            i += 1 + next_ch.len_utf8();
             continue;
         }
 
         // Skip code blocks
-        if bytes[i] == b'`'
-            && i + 2 < len
-            && bytes[i + 1] == b'`'
-            && bytes[i + 2] == b'`'
-            && let Some(close) = find_code_block_end(bytes, i + 3)
+        if text[i..].starts_with("```")
+            && let Some(close) = find_code_block_end(text, i + 3)
         {
             i = close;
             continue;
         }
 
         // Skip inline code
-        if bytes[i] == b'`'
-            && let Some(close) = find_inline_code_end(bytes, i + 1)
+        if ch == '`'
+            && let Some(close) = find_inline_code_end(text, i + 1)
         {
             i = close + 1; // past the closing `
             continue;
         }
 
         // Check for closing delimiter
-        if i + delim.len() <= len && &bytes[i..i + delim.len()] == delim {
+        if text[i..].starts_with(delim) {
             return Some(i);
         }
 
-        i += 1;
+        i += ch.len_utf8();
     }
 
     None
@@ -93,50 +85,37 @@ fn find_closing(bytes: &[u8], start: usize, delim: &[u8]) -> Option<usize> {
 
 /// Find the end of a code block starting after the opening ` ``` `.
 /// Returns the byte position right after the closing ` ``` `.
-fn find_code_block_end(bytes: &[u8], start: usize) -> Option<usize> {
-    let len = bytes.len();
-    let mut i = start;
-
+fn find_code_block_end(text: &str, start: usize) -> Option<usize> {
     // Skip optional language tag (rest of the opening line)
-    while i < len && bytes[i] != b'\n' {
-        i += 1;
-    }
+    let after_lang = match text[start..].find('\n') {
+        Some(p) => start + p,
+        None => return None,
+    };
 
-    // Now scan for closing ``` at the start of a line
-    while i < len {
-        if bytes[i] == b'\n'
-            && i + 3 < len
-            && bytes[i + 1] == b'`'
-            && bytes[i + 2] == b'`'
-            && bytes[i + 3] == b'`'
-        {
-            // Check that the rest of the line is empty (or end of string)
-            let end = i + 4;
-            if end >= len || bytes[end] == b'\n' {
-                return Some(end);
-            }
+    // Scan for \n``` followed by \n or end of string
+    let mut search_from = after_lang;
+    while search_from < text.len() {
+        let pos = text[search_from..].find("\n```")?;
+        let end = search_from + pos + 4; // \n + ```
+        if end >= text.len() || text[end..].starts_with('\n') {
+            return Some(end);
         }
-        i += 1;
+        search_from += pos + 1;
     }
 
     None
 }
 
-/// Find the closing `` ` `` for inline code starting at `start`.
+/// Find the closing `` ` `` for inline code starting at byte offset `start`.
 /// Returns the byte position of the closing backtick.
-fn find_inline_code_end(bytes: &[u8], start: usize) -> Option<usize> {
-    let len = bytes.len();
-    let mut i = start;
+fn find_inline_code_end(text: &str, start: usize) -> Option<usize> {
+    text[start..].find('`').map(|pos| start + pos)
+}
 
-    while i < len {
-        if bytes[i] == b'`' {
-            return Some(i);
-        }
-        // No escape handling inside inline code — backtick is the only terminator
-        i += 1;
-    }
-
-    None
+/// Find closing `)` for a link URL. Does not skip over formatting —
+/// URLs are opaque, just find the first unescaped `)`.
+fn find_raw_closing_paren(text: &str, start: usize) -> Option<usize> {
+    text[start..].find(')').map(|pos| start + pos)
 }
 
 /// Escapes given text, abiding Telegram flavoured Markdown
@@ -151,35 +130,31 @@ fn find_inline_code_end(bytes: &[u8], start: usize) -> Option<usize> {
 /// All other special characters in regular text are escaped with `\`.
 /// Inside code spans/blocks, only `` ` `` and `\` are escaped.
 pub fn tg_escape(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let len = bytes.len();
-    let mut out = String::with_capacity(len);
+    let mut out = String::with_capacity(text.len());
     let mut i = 0;
 
-    while i < len {
-        let b = bytes[i];
+    while i < text.len() {
+        let ch = text[i..].chars().next().unwrap();
 
         // 1. Already-escaped characters: \X → pass through verbatim
-        if b == b'\\' && i + 1 < len && is_tg_special(bytes[i + 1] as char) {
+        if ch == '\\'
+            && let Some(next_ch) = text.get(i + 1..).and_then(|s| s.chars().next())
+            && is_tg_special(next_ch)
+        {
             out.push('\\');
-            out.push(bytes[i + 1] as char);
-            i += 2;
+            out.push(next_ch);
+            i += 1 + next_ch.len_utf8();
             continue;
         }
 
         // 2. Code block: ```
-        if b == b'`'
-            && i + 2 < len
-            && bytes[i + 1] == b'`'
-            && bytes[i + 2] == b'`'
-            && let Some(end) = find_code_block_end(bytes, i + 3)
+        if text[i..].starts_with("```")
+            && let Some(end) = find_code_block_end(text, i + 3)
         {
             out.push_str("```");
-            // Content runs from after opening ``` to just before closing ```.
-            let content_end = end - 3;
-            let content = &text[i + 3..content_end];
-            for ch in content.chars() {
-                push_code_escaped(&mut out, ch);
+            let content = &text[i + 3..end - 3];
+            for c in content.chars() {
+                push_code_escaped(&mut out, c);
             }
             out.push_str("```");
             i = end;
@@ -187,13 +162,12 @@ pub fn tg_escape(text: &str) -> String {
         }
 
         // 3. Inline code: `
-        if b == b'`'
-            && let Some(close) = find_inline_code_end(bytes, i + 1)
+        if ch == '`'
+            && let Some(close) = find_inline_code_end(text, i + 1)
         {
             out.push('`');
-            let content = &text[i + 1..close];
-            for ch in content.chars() {
-                push_code_escaped(&mut out, ch);
+            for c in text[i + 1..close].chars() {
+                push_code_escaped(&mut out, c);
             }
             out.push('`');
             i = close + 1;
@@ -201,75 +175,64 @@ pub fn tg_escape(text: &str) -> String {
         }
 
         // 4. Link: [text](url)
-        if b == b'['
-            && let Some(bracket_close) = find_closing(bytes, i + 1, b"]")
-            && bracket_close + 1 < len
-            && bytes[bracket_close + 1] == b'('
-            && let Some(paren_close) = find_raw_closing_paren(bytes, bracket_close + 2)
+        if ch == '['
+            && let Some(bracket_close) = find_closing(text, i + 1, "]")
+            && text.get(bracket_close + 1..bracket_close + 2) == Some("(")
+            && let Some(paren_close) = find_raw_closing_paren(text, bracket_close + 2)
         {
             out.push('[');
-            let link_text = &text[i + 1..bracket_close];
-            out.push_str(&tg_escape(link_text));
+            out.push_str(&tg_escape(&text[i + 1..bracket_close]));
             out.push_str("](");
-            let url = &text[bracket_close + 2..paren_close];
-            out.push_str(url);
+            out.push_str(&text[bracket_close + 2..paren_close]);
             out.push(')');
             i = paren_close + 1;
             continue;
         }
 
         // 5. Spoiler: ||
-        if b == b'|'
-            && i + 1 < len
-            && bytes[i + 1] == b'|'
-            && let Some(close) = find_closing(bytes, i + 2, b"||")
+        if text[i..].starts_with("||")
+            && let Some(close) = find_closing(text, i + 2, "||")
         {
             out.push_str("||");
-            let inner = &text[i + 2..close];
-            out.push_str(&tg_escape(inner));
+            out.push_str(&tg_escape(&text[i + 2..close]));
             out.push_str("||");
             i = close + 2;
             continue;
         }
 
         // 6. Underline: __ (must check before single _)
-        if b == b'_'
-            && i + 1 < len
-            && bytes[i + 1] == b'_'
-            && !(i + 2 < len && bytes[i + 2] == b'_')
-            && let Some(close) = find_closing(bytes, i + 2, b"__")
+        if text[i..].starts_with("__")
+            && !text[i..].starts_with("___")
+            && let Some(close) = find_closing(text, i + 2, "__")
         {
             out.push_str("__");
-            let inner = &text[i + 2..close];
-            out.push_str(&tg_escape(inner));
+            out.push_str(&tg_escape(&text[i + 2..close]));
             out.push_str("__");
             i = close + 2;
             continue;
         }
 
         // 7. Bold: *
-        if b == b'*'
-            && let Some(close) = find_closing(bytes, i + 1, b"*")
+        if ch == '*'
+            && let Some(close) = find_closing(text, i + 1, "*")
         {
             out.push('*');
-            let inner = &text[i + 1..close];
-            out.push_str(&tg_escape(inner));
+            out.push_str(&tg_escape(&text[i + 1..close]));
             out.push('*');
             i = close + 1;
             continue;
         }
 
         // 8. Italic: _ (single, not part of __)
-        if b == b'_'
-            && let Some(close) = find_closing(bytes, i + 1, b"_")
+        if ch == '_'
+            && let Some(close) = find_closing(text, i + 1, "_")
         {
             // Make sure the closing _ is not part of __
-            let close_is_double = (close + 1 < len && bytes[close + 1] == b'_')
-                || (close > 0 && bytes[close - 1] == b'_' && close - 1 > i);
+            let close_is_double = text.get(close..close + 2) == Some("__")
+                || (close > i + 1 && text.get(close - 1..close) == Some("_"));
             if !close_is_double {
                 out.push('_');
-                let inner = &text[i + 1..close];
-                out.push_str(&tg_escape(inner));
+                out.push_str(&tg_escape(&text[i + 1..close]));
                 out.push('_');
                 i = close + 1;
                 continue;
@@ -277,46 +240,25 @@ pub fn tg_escape(text: &str) -> String {
         }
 
         // 9. Strikethrough: ~
-        if b == b'~'
-            && let Some(close) = find_closing(bytes, i + 1, b"~")
+        if ch == '~'
+            && let Some(close) = find_closing(text, i + 1, "~")
         {
             out.push('~');
-            let inner = &text[i + 1..close];
-            out.push_str(&tg_escape(inner));
+            out.push_str(&tg_escape(&text[i + 1..close]));
             out.push('~');
             i = close + 1;
             continue;
         }
 
-        // 10. Plain text: escape if special, or copy multi-byte UTF-8 verbatim
-        if b < 0x80 {
-            push_escaped(&mut out, b as char);
-            i += 1;
-        } else {
-            // Non-ASCII UTF-8 chars never need escaping for Telegram MarkdownV2
-            let ch = text[i..].chars().next().unwrap();
-            out.push(ch);
-            i += ch.len_utf8();
+        // 10. Plain text: escape special chars, pass through everything else
+        if is_tg_special(ch) {
+            out.push('\\');
         }
+        out.push(ch);
+        i += ch.len_utf8();
     }
 
     out
-}
-
-/// Find closing `)` for a link URL. Does not skip over formatting —
-/// URLs are opaque, just find the first unescaped `)`.
-fn find_raw_closing_paren(bytes: &[u8], start: usize) -> Option<usize> {
-    let len = bytes.len();
-    let mut i = start;
-
-    while i < len {
-        if bytes[i] == b')' {
-            return Some(i);
-        }
-        i += 1;
-    }
-
-    None
 }
 
 #[cfg(feature = "python")]
