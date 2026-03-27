@@ -15,7 +15,7 @@ Available as both a Rust crate and a Python package (via [PyO3](https://pyo3.rs/
   - In regular text: escapes `_*[]()~`>#+-=|{}.!\` characters
   - In code blocks and inline code: only escapes `` ` `` and `\` characters
 - Preserves markdown structure while ensuring proper escaping
-- Uses `pulldown-cmark` for robust markdown parsing
+- Hand-crafted parser tailored to Telegram's Markdown flavor (no third-party parsing dependencies)
 
 ## Python Usage
 
@@ -74,7 +74,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-telegram-escape = "0.1.0"
+telegram-escape = "0.4.0"
 ```
 
 ## Testing
@@ -87,16 +87,10 @@ cargo test
 python -c "from telegram_escape import tg_escape; print(tg_escape('hello_world'))"
 ```
 
-**Note:** Some Rust tests are currently marked as `#[ignore]` due to failing edge cases:
-- `test_escaped_characters` - handling of already-escaped characters
-- `test_math_expressions` - mathematical operators escaping
-
 ## Dependencies
 
 ### Rust
-- `pulldown-cmark` - Markdown parsing
-- `pulldown-cmark-to-cmark` - Markdown serialization (using custom fork)
-- `regex` - Pattern matching for escape characters
+- No runtime dependencies (only optional `pyo3` for Python bindings)
 
 ### Python build
 - `maturin` - Build backend (PEP 517 compliant, works with pip/uv/any standard tool)
@@ -104,7 +98,7 @@ python -c "from telegram_escape import tg_escape; print(tg_escape('hello_world')
 
 ## License
 
-See LICENSE file for details.
+MIT — see [LICENSE](LICENSE) for details.
 
 ## Author
 
